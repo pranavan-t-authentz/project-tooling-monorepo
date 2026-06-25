@@ -1,5 +1,11 @@
+# Project Tooling Monorepo
+
+Shared tooling, local Docker Compose setups, and proof-of-concept experiments for project infrastructure.
+
+## Repository Structure
+
+```
 project-tooling-monorepo/
-│
 ├── README.md
 ├── .gitignore
 ├── .editorconfig
@@ -30,3 +36,12 @@ project-tooling-monorepo/
 └── docs/
     ├── repo-guidelines.md
     └── contribution-guide.md
+```
+
+### Top-level areas
+
+| Path | Purpose |
+| --- | --- |
+| `docker-compose-setups/` | Reusable local Docker Compose stacks for development |
+| `pocs/` | Time-boxed experiments and spikes |
+| `docs/` | Monorepo-wide guidelines and contribution docs |
