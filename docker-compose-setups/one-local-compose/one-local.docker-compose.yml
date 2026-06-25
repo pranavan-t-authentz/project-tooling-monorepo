@@ -1,0 +1,194 @@
+# Authentz local platform — 6 services (5 app repos + Postgres)
+# Run from this directory:
+#   docker compose -f one-local.docker-compose.yml up -d --build
+#   docker compose -f one-local.docker-compose.yml down
+#
+# Application repos live as siblings under the Work root (../ from here).
+
+name: authentz-local-platform
+
+x-logging: &default-logging
+  driver: local
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-aws-common: &aws-common
+  volumes:
+    - ${AWS_SHARED_CREDENTIALS_DIR:-${HOME}/.aws}:/root/.aws:ro
+  environment:
+    AWS_PROFILE: ${AWS_PROFILE:-741448925364_AdministratorAccess}
+    AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-eu-west-2}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      POSTGRES_DB: central-auth-db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - authentz_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d central-auth-db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - authentz_local_network
+
+  speech-to-text-streaming:
+    <<: *aws-common
+    build:
+      context: ../Speech-to-text-streaming
+      dockerfile: Dockerfile.dev
+    restart: unless-stopped
+    logging: *default-logging
+    ports:
+      - "127.0.0.1:7000:8000"
+    env_file:
+      - ../Speech-to-text-streaming/.env
+    environment:
+      env: dev
+      AWS_REGION: ${AWS_DEFAULT_REGION:-eu-west-2}
+      CENTRAL_AUTH_ENABLED: "true"
+      CENTRAL_DATABASE_URL: postgresql+psycopg2://postgres:postgres@postgres:5432/central-auth-db
+      ALLOWED_ORIGINS: "http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000"
+    volumes:
+      - ../Speech-to-text-streaming/docker/scripts/stt-migrate.sh:/usr/local/bin/stt-migrate.sh:ro
+    entrypoint: ["/bin/sh", "/usr/local/bin/stt-migrate.sh"]
+    command:
+      - python
+      - -m
+      - uvicorn
+      - app.main:app
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+      - --workers
+      - "1"
+      - --no-access-log
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8000/health/live"]
+      interval: 15s
+      timeout: 15s
+      retries: 5
+      start_period: 30s
+    networks:
+      - authentz_local_network
+
+  python-flask-api:
+    <<: *aws-common
+    build:
+      context: ../authentz-python-flask-api
+      dockerfile: Dockerfile.dev
+    restart: unless-stopped
+    logging: *default-logging
+    ports:
+      - "127.0.0.1:5000:5000"
+    env_file:
+      - ../authentz-python-flask-api/.env
+    environment:
+      env: dev
+      region: ${AWS_DEFAULT_REGION:-eu-west-2}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:5000/health"]
+      interval: 15s
+      timeout: 15s
+      retries: 5
+      start_period: 90s
+    networks:
+      - authentz_local_network
+
+  laravel-backend:
+    <<: *aws-common
+    build:
+      context: ../authentz-laravel-backend
+      dockerfile: Dockerfile.dev
+    restart: unless-stopped
+    logging: *default-logging
+    ports:
+      - "127.0.0.1:8000:8000"
+    env_file:
+      - ../authentz-laravel-backend/.env.dev
+    environment:
+      APP_ENV: local
+      APP_URL: http://127.0.0.1:8000
+      AWS_PROFILE: ${AWS_PROFILE:-741448925364_AdministratorAccess}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-eu-west-2}
+    command: ["php", "artisan", "serve", "--host=0.0.0.0", "--port=8000"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8000/up"]
+      interval: 15s
+      timeout: 15s
+      retries: 5
+      start_period: 60s
+    networks:
+      - authentz_local_network
+
+  frontend-next:
+    build:
+      context: ../authentz-frontend-next
+      dockerfile: Dockerfile.dev
+    restart: unless-stopped
+    logging: *default-logging
+    ports:
+      - "127.0.0.1:3000:3000"
+    env_file:
+      - ../authentz-frontend-next/.env.local
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:5000/api}
+    volumes:
+      - ../authentz-frontend-next:/app
+      - frontend_node_modules:/app/node_modules
+    command: ["npm", "run", "dev", "--", "-H", "0.0.0.0", "-p", "3000"]
+    depends_on:
+      python-flask-api:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/"]
+      interval: 15s
+      timeout: 15s
+      retries: 5
+      start_period: 60s
+    networks:
+      - authentz_local_network
+
+  video-processing:
+    <<: *aws-common
+    build:
+      context: ../video-processing
+      dockerfile: Dockerfile.dev
+    restart: unless-stopped
+    logging: *default-logging
+    ports:
+      - "127.0.0.1:5001:5000"
+    environment:
+      AWS_PROFILE: ${AWS_PROFILE:-741448925364_AdministratorAccess}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-eu-west-2}
+      PORT: "5000"
+      PYTHONUNBUFFERED: "1"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:5000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+    networks:
+      - authentz_local_network
+
+networks:
+  authentz_local_network:
+    driver: bridge
+
+volumes:
+  authentz_pgdata:
+  frontend_node_modules:
